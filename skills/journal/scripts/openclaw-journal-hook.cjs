@@ -236,6 +236,18 @@ function patch(mod, scheme) {
 patch(http, 'http');
 patch(https, 'https');
 
+function triggerContextRetrieve(text) {
+  if (!text || !String(text).trim()) return;
+  if (String(text).trim() === 'NO_REPLY' || String(text).trim() === 'HEARTBEAT_OK') return;
+  const scriptPath = `${WORKSPACE}/scripts/context_retrieve.sh`;
+  const child = spawn('bash', [scriptPath, String(text).trim()], {
+    stdio: ['ignore', 'ignore', 'ignore'],
+    detached: true,
+  });
+  child.unref();
+  child.on('error', () => {});
+}
+
 const originalEmit = EventEmitter.prototype.emit;
 if (!originalEmit.__journalPatched) {
   EventEmitter.prototype.emit = function journalAwareEmit(eventName, ...args) {
@@ -244,6 +256,7 @@ if (!originalEmit.__journalPatched) {
         const inbound = extractInboundEnvelope(arg);
         if (inbound && inbound.text) {
           appendUser(inbound.text, inbound.meta);
+          triggerContextRetrieve(inbound.text);
           break;
         }
       }
