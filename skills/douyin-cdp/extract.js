@@ -1,7 +1,7 @@
-#!/usr/bin/env node
 /**
  * douyin-cdp-extract.js
  * 通过 Chromium CDP 远程调试提取抖音视频直链
+ * 等待 video 元素完全加载后再提取，确保拿到完整视频而非预览片段
  */
 const { chromium } = require('playwright');
 
@@ -25,29 +25,44 @@ async function main() {
 
     await page.bringToFront();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(4000);
 
-    const videoUrl = await page.evaluate(() => {
-      const v = document.querySelector('video');
-      if (!v) return null;
-      const src = v.querySelector('source[src]');
-      return src ? src.src : (v.currentSrc || v.src || null);
-    });
+    // 等待 video 元素出现（最多等15秒）
+    try {
+      await page.waitForSelector('video', { timeout: 15000 });
+    } catch(e) {
+      console.log('ERROR=视频元素未出现');
+      await browser.close();
+      process.exit(1);
+    }
 
-    if (videoUrl) {
-      console.log(videoUrl);
-    } else {
-      // 重试一次，等更久
-      await page.waitForTimeout(3000);
-      const retry = await page.evaluate(() => {
+    // 等待视频加载完成：检测 duration 和 readyState
+    // duration > 1 表示不是预览片段；readyState >= 3 表示至少数据已加载
+    let videoInfo = null;
+    for (let i = 0; i < 10; i++) {
+      videoInfo = await page.evaluate(() => {
         const v = document.querySelector('video');
-        return v ? (v.currentSrc || v.src || null) : null;
+        if (!v) return null;
+        return {
+          src: v.currentSrc || v.src || null,
+          duration: v.duration,
+          readyState: v.readyState
+        };
       });
-      console.log(retry || 'ERROR=未能提取到视频直链');
+      if (videoInfo && videoInfo.src && videoInfo.duration > 1 && videoInfo.readyState >= 3) {
+        break;
+      }
+      await page.waitForTimeout(1500);
+    }
+
+    if (videoInfo && videoInfo.src) {
+      console.log(videoInfo.src);
+    } else {
+      console.log('ERROR=未能提取到视频直链');
+      process.exit(1);
     }
 
     await browser.close();
-  } catch (e) {
+  } catch(e) {
     console.log('ERROR=' + e.message);
     if (browser) await browser.close().catch(() => {});
     process.exit(1);

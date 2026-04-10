@@ -42,6 +42,7 @@ for i in $(seq 1 10); do
 done
 
 # 用 node + playwright 提取 video src
+# 关键：等待 video 元素出现 + 检测 duration 确保是完整视频而非预览片段
 echo "[douyin-cdp] 提取视频直链..."
 
 node - << 'NODEEOF'
@@ -56,20 +57,41 @@ const { chromium } = require('playwright');
     const page = pages.find(p => p.url().includes('douyin.com/video')) || pages[0];
 
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForTimeout(4000);
 
-    const videoUrl = await page.evaluate(() => {
-      const v = document.querySelector('video');
-      if (!v) return null;
-      const src = v.querySelector('source[src]');
-      return src ? src.src : (v.currentSrc || v.src);
-    });
+    // 等待 video 元素出现（最多等15秒）
+    try {
+      await page.waitForSelector('video', { timeout: 15000 });
+    } catch(e) {
+      console.log('ERROR=视频元素未出现');
+      await browser.close();
+      process.exit(1);
+    }
 
-    if (videoUrl) {
-      console.log('VIDEO_URL=' + videoUrl);
+    // 等待视频加载完成：检测 duration 和 readyState
+    // duration > 1 表示不是预览片段；readyState = 4 表示完全加载
+    let videoInfo = null;
+    for (let i = 0; i < 10; i++) {
+      videoInfo = await page.evaluate(() => {
+        const v = document.querySelector('video');
+        if (!v) return null;
+        return {
+          src: v.currentSrc || v.src || null,
+          duration: v.duration,
+          readyState: v.readyState
+        };
+      });
+      if (videoInfo && videoInfo.src && videoInfo.duration > 1 && videoInfo.readyState >= 3) {
+        break;
+      }
+      await page.waitForTimeout(1500);
+    }
+
+    if (videoInfo && videoInfo.src) {
+      console.log('VIDEO_URL=' + videoInfo.src);
+      console.log('VIDEO_DURATION=' + videoInfo.duration);
     } else {
       console.log('VIDEO_URL=');
-      console.log('ERROR=未能提取到视频直链');
+      console.log('ERROR=未能提取到视频直链或视频不完整');
     }
 
     await browser.close();
@@ -80,32 +102,6 @@ const { chromium } = require('playwright');
   }
 })();
 NODEEOF
-
-VIDEO_URL=$(grep "VIDEO_URL=" /dev/stdin | tail -1 | sed 's/VIDEO_URL=//')
-
-if [ -z "$VIDEO_URL" ]; then
-  echo "[douyin-cdp] 提取失败，尝试备用等待..."
-  sleep 5
-  # retry once
-  node - << 'NODEEOF2'
-const { chromium } = require('playwright');
-(async () => {
-  const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
-  const ctx = browser.contexts()[0];
-  const pages = ctx.pages();
-  const page = pages.find(p => p.url().includes('douyin.com/video')) || pages[0];
-  await page.bringToFront();
-  await page.waitForTimeout(3000);
-  const videoUrl = await page.evaluate(() => {
-    const v = document.querySelector('video');
-    if (!v) return null;
-    return v.currentSrc || v.src || null;
-  });
-  console.log('VIDEO_URL=' + (videoUrl || ''));
-  await browser.close();
-})();
-NODEEOF2
-fi
 
 # 杀掉 chromium
 killall -9 chrome chromium 2>/dev/null || true
